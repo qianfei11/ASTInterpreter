@@ -52,16 +52,18 @@ do { \
 
 int log_level = LOG_LEVEL_ALL;
 
-void get_sys_time(void) {
-    struct timeval tv;
+void get_sys_time() {
+    struct timeval tv{};
     struct tm *tm_ptr;
-    gettimeofday(&tv, NULL);
+    gettimeofday(&tv, nullptr);
     tm_ptr = localtime(&tv.tv_sec);
     printf("[%d-%02d-%02d %02d:%02d:%02d.%d] ", 1900+tm_ptr->tm_year, 1+tm_ptr->tm_mon,
            tm_ptr->tm_mday, tm_ptr->tm_hour, tm_ptr->tm_min, tm_ptr->tm_sec, tv.tv_usec/1000);
 }
 
-#define UNKOWN_RET 0xDEAD0001
+#define UNKNOWN_RET 0xDEAD0001
+
+#define RED(s) "\033[31;4m"#s"\033[0m"
 
 enum RET_TYPES {
     VOID_RETURN,
@@ -76,8 +78,8 @@ class StackFrame {
     /// The current stmt
     Stmt * mPC; /* Program Counter */
 
-    bool retType; /* enum RET_TYPES */
-    int retValue;
+    bool retType = VOID_RETURN; /* enum RET_TYPES */
+    int retValue = 0;
 public:
     StackFrame() : mVars(), mExprs(), mPC() {
     }
@@ -114,10 +116,10 @@ public:
     }
 
     bool haveRV() {
-        if (retType && retValue) {
-            return true;
-        } else {
+        if (retType == VOID_RETURN && retValue == 0) {
             return false;
+        } else {
+            return true;
         }
     }
 
@@ -127,7 +129,7 @@ public:
         } else if (retType == INT_RETURN) {
             return retValue;
         } else {
-            return UNKOWN_RET;
+            return UNKNOWN_RET;
         }
     }
 
@@ -169,8 +171,9 @@ public:
     void init(TranslationUnitDecl * unit) { /* traverse functions & global variables */
         LOG_DEBUG("call init(TranslationUnitDecl *);\n");
         unit->dumpColor();
+        mStack.push_back(StackFrame()); /* save the stack (prevent from segmentation fault) */
         for (TranslationUnitDecl::decl_iterator i = unit->decls_begin(), e = unit->decls_end(); i != e; ++i) { /* traverse the full AST */
-            if (FunctionDecl * fDecl = dyn_cast<FunctionDecl>(*i) ) { /* global function */
+            if (auto * fDecl = dyn_cast<FunctionDecl>(*i) ) { /* global function */
                 LOG_DEBUG("FunctionDecl->Name = %s\n", fDecl->getName().data());
                 if (fDecl->getName().equals("FREE")) {
                     mFree = fDecl;
@@ -183,7 +186,7 @@ public:
                 } else if (fDecl->getName().equals("main")) {
                     mEntry = fDecl;
                 }
-            } else if (VarDecl * vDecl = dyn_cast<VarDecl>(*i)) { /* global variable */
+            } else if (auto * vDecl = dyn_cast<VarDecl>(*i)) { /* global variable */
                 LOG_DEBUG("VarDecl->Name = %s\n", vDecl->getName().data());
                 if (vDecl->getType().getTypePtr()->isIntegerType()) {
                     if (vDecl->hasInit()) {
@@ -196,7 +199,6 @@ public:
                 }
             }
         }
-//        mStack.push_back(StackFrame()); /* save the stack */
     }
 
     FunctionDecl * getEntry() {
@@ -211,58 +213,117 @@ public:
         LOG_DEBUG("call binOp(BinaryOperator *);\n");
         Expr * left = bOp->getLHS(); /* get left-hand side */
         Expr * right = bOp->getRHS(); /* get right-hand side */
-        left->dumpColor();
-        right->dumpColor();
+        bOp->dumpColor();
+//        traverseStack();
 
         if (bOp->isAssignmentOp()) { /* assignment operation */
             LOG_DEBUG("BinaryOperator is assignment operator\n");
-            LOG_DEBUG("traverse mStack (%lu)\n", mStack.size());
-            for (auto it = mStack.begin(); it != mStack.end(); ++it) {
-                it->getPC()->dumpColor();
-            }
-            if (DeclRefExpr * declExpr = dyn_cast<DeclRefExpr>(left)) { /* Expr */
+            if (auto * declExpr = dyn_cast<DeclRefExpr>(left)) { /* Expr */
                 int val = eval(right);
                 mStack.back().bindStmt(left, val); /* set statement value */
                 Decl * decl = declExpr->getFoundDecl();
                 mStack.back().bindDecl(decl, val); /* set declaration value */
             } else {
-                ;
+                LOG_DEBUG("TODO");
             }
         } else { /* arithmetic operation */
             LOG_DEBUG("BinaryOperator is arithmetic operator\n");
             auto op = bOp->getOpcode();
+            int res;
             switch (op) {
-                default:
+                case BO_Add: /* + */
+                    res = eval(left) + eval(right);
                     break;
+                case BO_Sub: /* - */
+                    res = eval(left) - eval(right);
+                    break;
+                case BO_Mul: /* * */
+                    res = eval(left) * eval(right);
+                    break;
+                case BO_GT: /* > */
+                    res = eval(left) > eval(right);
+                    break;
+                case BO_LT: /* < */
+                    res = eval(left) < eval(right);
+                    break;
+                case BO_EQ: /* == */
+                    res = eval(left) == eval(right);
+                    break;
+                case BO_NE: /* != */
+                    res = eval(left) != eval(right);
+                    break;
+                case BO_GE: /* >= */
+                    res = (eval(left) == eval(right)) || (eval(left) > eval(right));
+                    break;
+                case BO_LE: /* <= */
+                    res = (eval(left) == eval(right)) || (eval(left) < eval(right));
+                    break;
+                default:
+                    LOG_DEBUG("TODO");
+                    break;
+            }
+            /* save statement value */
+            if (mStack.back().isExprExist(bOp)) {
+                mStack.back().bindStmt(bOp, res);
+            } else {
+                mStack.back().pushStmtVal(bOp, res);
             }
         }
     }
 
+    void unaryOp(UnaryOperator * uOp) {
+        LOG_DEBUG("call unaryOp(UnaryOperator *);\n");
+        auto op = uOp->getOpcode();
+        auto expr = uOp->getSubExpr();
+        int res;
+        switch (op) {
+            case UO_Minus:
+                res = -1 * eval(expr);
+                break;
+            default:
+                LOG_DEBUG("TODO");
+                break;
+        }
+        mStack.back().pushStmtVal(uOp, res);
+    }
+
     /* Declaration */
     void decl(DeclStmt * declStmt) {
+        declStmt->dumpColor();
         for (DeclStmt::decl_iterator it = declStmt->decl_begin(), ie = declStmt->decl_end();
              it != ie; ++ it) {
             Decl * decl = *it;
-            if (VarDecl * varDecl = dyn_cast<VarDecl>(decl)) {
+            if (auto * varDecl = dyn_cast<VarDecl>(decl)) {
                 LOG_DEBUG("varDecl: %s\n", varDecl->getName().data());
-                mStack.back().bindDecl(varDecl, 0);
+                if (varDecl->getType().getTypePtr()->isIntegerType() || varDecl->getType().getTypePtr()->isPointerType()) {
+                    if (varDecl->hasInit()) {
+                        mStack.back().bindDecl(varDecl, eval(varDecl->getInit()));
+                    } else {
+                        mStack.back().bindDecl(varDecl, 0);
+                    }
+                } else {
+                    LOG_DEBUG("TODO");
+                }
             }
         }
     }
 
     /* Declaration References */
     void declRef(DeclRefExpr * declRef) {
-        mStack.back().setPC(declRef);
+        declRef->dumpColor();
+        mStack.back().setPC(declRef); /* set PC to current */
         if (declRef->getType()->isIntegerType()) {
             Decl* decl = declRef->getFoundDecl();
 
             int val = mStack.back().getDeclVal(decl);
+            LOG_DEBUG("val = %d\n", val);
             mStack.back().bindStmt(declRef, val);
         }
     }
 
     /* Cast */
     void cast(CastExpr * castExpr) {
+        castExpr->dumpColor();
         mStack.back().setPC(castExpr);
         if (castExpr->getType()->isIntegerType()) {
             Expr * expr = castExpr->getSubExpr();
@@ -273,18 +334,19 @@ public:
 
     /// !TODO Support Function Call
     void call(CallExpr * callExpr) { /* function call */
+        callExpr->dumpColor();
         mStack.back().setPC(callExpr);
         int val = 0;
         FunctionDecl * callee = callExpr->getDirectCallee();
         if (callee == mInput) {
-            llvm::errs() << "Please Input an Integer Value : ";
+            printf("Please Input an Integer Value : ");
             scanf("%d", &val);
 
             mStack.back().bindStmt(callExpr, val);
         } else if (callee == mOutput) {
             Expr * decl = callExpr->getArg(0);
             val = mStack.back().getStmtVal(decl);
-            llvm::errs() << val;
+            printf(RED(Result Value : %d) "\n", val);
         } else if (callee == mMalloc) {
             ;
         } else if (callee == mFree) {
@@ -307,10 +369,32 @@ public:
         if (auto decl = dyn_cast<DeclRefExpr>(expr)) {
             declRef(decl);
             return mStack.back().getStmtVal(decl); /* ??? */
-        } else if (auto intLiteral = dyn_cast<IntegerLiteral>(expr)) {
+        } else if (auto intLiteral = dyn_cast<IntegerLiteral>(expr)) { /* int */
             return intLiteral->getValue().getSExtValue();
-        } else {
+        } else if (auto bOp = dyn_cast<BinaryOperator>(expr)) { /* binary operator */
+            binOp(bOp);
+            return mStack.back().getStmtVal(bOp);
+        } else if (auto callExpr = dyn_cast<CallExpr>(expr)) { /* call expression */
+            return mStack.back().getStmtVal(callExpr);
+        } else if (auto uOp = dyn_cast<UnaryOperator>(expr)) {
+            unaryOp(uOp);
+            return mStack.back().getStmtVal(uOp);
+        } else { /* TODO */
             LOG_DEBUG("TODO");
+            return 0;
         }
+    }
+
+    void traverseStack() {
+        LOG_DEBUG("traverse mStack (%lu)\n", mStack.size());
+        for (auto & it : mStack) {
+            it.getPC()->dumpColor();
+        }
+    }
+
+    void setReturnStmt(ReturnStmt * returnStmt) {
+        returnStmt->dumpColor();
+        int val = eval(returnStmt->getRetValue());
+        mStack.back().setRV(INT_RETURN, val);
     }
 };
