@@ -41,44 +41,54 @@ public:
     }
 
     /* visit declaration reference expression */
-    virtual void VisitDeclRefExpr(DeclRefExpr * expr) {
+    virtual void VisitDeclRefExpr(DeclRefExpr * declRefExpr) {
         LOG_DEBUG("call VisitDeclRefExpr(DeclRefExpr *)\n");
         if (!mEnv->mStack.back().haveRV()) {
             LOG_DEBUG("in VisitDeclRefExpr(DeclRefExpr *)\n");
-            VisitStmt(expr);
-            mEnv->declRef(expr);
+            VisitStmt(declRefExpr);
+            mEnv->declRef(declRefExpr);
         }
         LOG_DEBUG("finish VisitDeclRefExpr(DeclRefExpr *)\n");
     }
 
+    virtual void VisitArraySubscriptExpr(ArraySubscriptExpr * arrExpr) {
+        LOG_DEBUG("call ArraySubscriptExpr(ArraySubscriptExpr *)\n");
+        if (!mEnv->mStack.back().haveRV()) {
+            LOG_DEBUG("in ArraySubscriptExpr(ArraySubscriptExpr *)\n");
+            VisitStmt(arrExpr);
+            mEnv->arrayExpr(arrExpr);
+        }
+        LOG_DEBUG("finish ArraySubscriptExpr(ArraySubscriptExpr *)\n");
+    }
+
     /* visit cast expression */
-    virtual void VisitCastExpr(CastExpr * expr) {
+    virtual void VisitCastExpr(CastExpr * castExpr) {
         LOG_DEBUG("call VisitCastExpr(CastExpr *)\n");
         if (!mEnv->mStack.back().haveRV()) {
             LOG_DEBUG("in VisitCastExpr(CastExpr *)\n");
-            VisitStmt(expr);
-            mEnv->cast(expr);
+            VisitStmt(castExpr);
+            mEnv->cast(castExpr);
         }
         LOG_DEBUG("finish VisitCastExpr(CastExpr *)\n");
     }
 
     /* visit call expression */
-    virtual void VisitCallExpr(CallExpr * call) {
+    virtual void VisitCallExpr(CallExpr * callExpr) {
         LOG_DEBUG("call VisitCallExpr(CallExpr *)\n");
         if (!mEnv->mStack.back().haveRV()) {
             LOG_DEBUG("in VisitCallExpr(CallExpr *)\n");
-            VisitStmt(call);
-            mEnv->call(call);
+            VisitStmt(callExpr);
+            mEnv->call(callExpr);
             /* recursion */
             LOG_DEBUG("start recursion\n");
-            if (FunctionDecl *funcDecl = call->getDirectCallee()) {
+            if (FunctionDecl *funcDecl = callExpr->getDirectCallee()) {
                 if (!(funcDecl->getName().equals("GET") || funcDecl->getName().equals("PRINT") ||
                       funcDecl->getName().equals("MALLOC") || funcDecl->getName().equals("FREE"))) {
 //                    mEnv->traverseStack();
                     Visit(funcDecl->getBody());
                     int rv = mEnv->mStack.back().getRV();
                     mEnv->mStack.pop_back();
-                    mEnv->mStack.back().pushStmtVal(call, rv); /* save function's return value */
+                    mEnv->mStack.back().pushStmtVal(callExpr, rv); /* save function's return value */
                 }
             }
         }

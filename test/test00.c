@@ -4,7 +4,7 @@ extern void FREE(void *);
 extern void PRINT(int);
 
 int main() {
-   int a;
-   a=100;
-   PRINT(a);
+  int a;
+  a=100;
+  PRINT(a);
 }
