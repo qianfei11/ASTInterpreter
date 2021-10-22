@@ -82,9 +82,8 @@ public:
             /* recursion */
             LOG_DEBUG("start recursion\n");
             if (FunctionDecl *funcDecl = callExpr->getDirectCallee()) {
-                if (!(funcDecl->getName().equals("GET") || funcDecl->getName().equals("PRINT") ||
-                      funcDecl->getName().equals("MALLOC") || funcDecl->getName().equals("FREE"))) {
-//                    mEnv->traverseStack();
+                if (!(funcDecl->getName().equals("GET") || funcDecl->getName().equals("PRINT") || funcDecl->getName().equals("MALLOC") || funcDecl->getName().equals("FREE"))) {
+                    LOG_COLOR(funcDecl);
                     Visit(funcDecl->getBody());
                     int rv = mEnv->mStack.back().getRV();
                     mEnv->mStack.pop_back();
@@ -157,6 +156,31 @@ public:
             }
         }
         LOG_DEBUG("finish VisitForStmt(ForStmt *)\n");
+    }
+
+    virtual void VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr * uOrTExpr) {
+        LOG_DEBUG("call VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *)\n");
+        if (!mEnv->mStack.back().haveRV()) {
+            LOG_DEBUG("in VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *)\n");
+            VisitStmt(uOrTExpr);
+            mEnv->unaryOrTypeExpr(uOrTExpr);
+        }
+        LOG_DEBUG("finish VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *)\n");
+    }
+
+    virtual void VisitCStyleCastExpr(CStyleCastExpr * cCastExpr) {
+        LOG_DEBUG("call VisitCStyleCastExpr(CStyleCastExpr *)\n");
+        if (!mEnv->mStack.back().haveRV()) {
+            LOG_DEBUG("in VisitCStyleCastExpr(CStyleCastExpr *)\n");
+            VisitStmt(cCastExpr);
+            mEnv->cStyleCastExpr(cCastExpr);
+        }
+        LOG_DEBUG("finish VisitCStyleCastExpr(CStyleCastExpr *)\n");
+    }
+
+    virtual void VisitIntegerLiteral(IntegerLiteral * intLiteral) {
+        VisitStmt(intLiteral);
+        mEnv->integerLiteral(intLiteral);
     }
 
 private:

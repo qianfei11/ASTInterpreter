@@ -1,6 +1,7 @@
 //==--- tools/clang-check/ClangInterpreter.cpp - Clang Interpreter tool --------------===//
 //===----------------------------------------------------------------------===//
 #include <cstdio>
+#include <cstdlib>
 #include <sys/time.h>
 
 #include "clang/AST/ASTConsumer.h"
@@ -18,39 +19,46 @@ enum LOG_LEVEL {
     LOG_LEVEL_WARN = -1,
     LOG_LEVEL_INFO = 0,
     LOG_LEVEL_DEBUG = 1,
-    LOG_LEVEL_ALL = 2,
+    LOG_LEVEL_COLOR = 2,
+    LOG_LEVEL_ALL = 3,
 };
 
 #define LOG_DEBUG(format,...) \
 do { \
-     	if (log_level >= LOG_LEVEL_DEBUG) {	\
-		    get_sys_time();	\
-     		printf("[%20s] [%6d] [DEBUG] " format "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
-	    }	\
+ 	if (log_level >= LOG_LEVEL_DEBUG) {	\
+        get_sys_time();	\
+        printf("[%20s] [%6d] [DEBUG] " format "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
+    }	\
 } while(0)
+#define LOG_COLOR(expr) \
+do { \
+    if (log_level >= LOG_LEVEL_COLOR) { \
+        expr->dumpColor(); \
+    } \
+} while (0)
 #define LOG_INFO(format,...) \
 do { \
-     	if (log_level >= LOG_LEVEL_INFO) {	\
-		    get_sys_time();	\
-     		printf("[%20s] [%6d] [INFO ] " format "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
-	    }	\
+    if (log_level >= LOG_LEVEL_INFO) {	\
+	    get_sys_time();	\
+    	printf("[%20s] [%6d] [INFO ] " format "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
+	}	\
 } while(0)
 #define LOG_WARN(format,...) \
 do { \
-     	if (log_level >= LOG_LEVEL_WARN) {	\
-		    get_sys_time();	\
-     		printf("[%20s] [%6d] [WARN ] " format "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
-	    }	\
+    if (log_level >= LOG_LEVEL_WARN) {	\
+	    get_sys_time();	\
+    	printf("[%20s] [%6d] [WARN ] " format "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
+	}	\
 } while(0)
 #define LOG_ERROR(format,...) \
 do { \
-     	if (log_level >= LOG_LEVEL_ERROR) {	\
-		    get_sys_time();	\
-     		printf("[%20s] [%6d] [ERROR] " format "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
-	    }	\
+    if (log_level >= LOG_LEVEL_ERROR) {	\
+	    get_sys_time();	\
+    	printf("[%20s] [%6d] [ERROR] " format "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
+	}	\
 } while(0)
 
-int log_level = LOG_LEVEL_ALL;
+int log_level = LOG_LEVEL_OFF;
 
 void get_sys_time() {
     struct timeval tv{};
@@ -133,7 +141,7 @@ public:
         return mPC; /* get program counter */
     }
 
-    void setRV(bool rt, int rv) {
+    void setRV(bool rt, long rv) {
         retType = rt;
         retValue = rv;
     }
@@ -146,7 +154,7 @@ public:
         }
     }
 
-    int getRV() {
+    long getRV() {
         if (retType == VOID_RETURN) {
             return 0;
         } else if (retType == INT_RETURN) {
@@ -156,20 +164,12 @@ public:
         }
     }
 
-    void pushStmtVal(Stmt * stmt, int value) { /* save function's return value */
-        mExprs.insert(std::pair<Stmt *, int>(stmt, value));
+    void pushStmtVal(Stmt * stmt, long value) { /* save function's return value */
+        mExprs.insert(std::pair<Stmt *, long>(stmt, value));
     }
 
     bool isExprExist(Stmt * stmt) {
         return mExprs.find(stmt) != mExprs.end();
-    }
-
-    void setHeapVal(Heap * heap, long value) {
-        mChunks.insert(std::pair<Heap *, long>(heap, value));
-    }
-
-    long getHeapVal(Heap * heap) {
-        return mChunks[heap];
     }
 };
 
@@ -178,8 +178,9 @@ class Environment {
     FunctionDecl * mMalloc;
     FunctionDecl * mInput;
     FunctionDecl * mOutput;
-
     FunctionDecl * mEntry;
+    FunctionDecl * mOthers;
+
 public:
     std::vector<StackFrame> mStack; /* Stack */
 
@@ -190,25 +191,32 @@ public:
     /// Initialize the Environment
     void init(TranslationUnitDecl * unit) { /* traverse functions & global variables */
         LOG_DEBUG("call init(TranslationUnitDecl *);\n");
-        unit->dumpColor();
+        LOG_COLOR(unit);
         mStack.push_back(StackFrame()); /* save the stack (prevent from segmentation fault) */
         for (TranslationUnitDecl::decl_iterator i = unit->decls_begin(), e = unit->decls_end(); i != e; ++i) { /* traverse the full AST */
             if (auto fDecl = dyn_cast<FunctionDecl>(*i) ) { /* global function */
                 LOG_DEBUG("FunctionDecl->Name = %s\n", fDecl->getName().data());
                 if (fDecl->getName().equals("FREE")) {
                     mFree = fDecl;
+                    mStack.back().bindDecl(fDecl, (long) mFree);
                 } else if (fDecl->getName().equals("MALLOC")) {
                     mMalloc = fDecl;
+                    mStack.back().bindDecl(fDecl, (long) mMalloc);
                 } else if (fDecl->getName().equals("GET")) {
                     mInput = fDecl;
+                    mStack.back().bindDecl(fDecl, (long) mInput);
                 } else if (fDecl->getName().equals("PRINT")) {
                     mOutput = fDecl;
+                    mStack.back().bindDecl(fDecl, (long) mOutput);
                 } else if (fDecl->getName().equals("main")) {
                     mEntry = fDecl;
+                    mStack.back().bindDecl(fDecl, (long) mEntry);
+                } else { /* other functions */
+                    mStack.back().bindDecl(fDecl, (long) mOthers);
                 }
             } else if (auto vDecl = dyn_cast<VarDecl>(*i)) { /* global variable */
                 LOG_DEBUG("VarDecl->Name = %s\n", vDecl->getName().data());
-                if (vDecl->getType().getTypePtr()->isIntegerType()) {
+                if (vDecl->getType().getTypePtr()->isIntegerType() || vDecl->getType().getTypePtr()->isPointerType()) {
                     if (vDecl->hasInit()) {
                         mStack.back().bindDecl(vDecl, eval(vDecl->getInit()));
                     } else {
@@ -235,31 +243,30 @@ public:
         LOG_DEBUG("call binOp(BinaryOperator *);\n");
         Expr * left = bOp->getLHS(); /* get left-hand side */
         Expr * right = bOp->getRHS(); /* get right-hand side */
-        bOp->dumpColor();
+        LOG_COLOR(bOp);
 //        traverseStack();
 
         if (bOp->isAssignmentOp()) { /* assignment operation */
             LOG_DEBUG("BinaryOperator is assignment operator\n");
             if (auto declExpr = dyn_cast<DeclRefExpr>(left)) { /* Expr */
-                int val = eval(right);
+                long val = eval(right);
+                LOG_DEBUG(RED(%s => 0x%lx) "\n", declExpr->getFoundDecl()->getName().data(), val);
                 mStack.back().bindStmt(left, val); /* set statement value */
                 Decl * decl = declExpr->getFoundDecl();
                 mStack.back().bindDecl(decl, val); /* set declaration value */
             } else if (auto arrExpr = dyn_cast<ArraySubscriptExpr>(left)) {
                 if (auto declExpr = dyn_cast<DeclRefExpr>(arrExpr->getLHS()->IgnoreImpCasts())) {
                     Decl * decl = declExpr->getFoundDecl();
-                    int val = eval(right);
-                    int idx = eval(arrExpr->getRHS());
+                    long val = eval(right);
+                    long idx = eval(arrExpr->getRHS());
                     if (auto varDecl = dyn_cast<VarDecl>(decl)) {
                         if (auto arrType = dyn_cast<ConstantArrayType>(varDecl->getType().getTypePtr())) {
                             if (arrType->getElementType().getTypePtr()->isIntegerType()) {
                                 int * p = (int *) mStack.back().getDeclVal(varDecl);
-                                varDecl->dumpColor();
-                                printf(RED(%p) "\n", p);
-                                *(p + idx) = val;
-                            } else if (arrType->getElementType().getTypePtr()->isCharType()) {
-                                char * p = (char *) mStack.back().getDeclVal(varDecl);
-                                *(p + idx) = val;
+                                *(p + idx) = (int) val;
+                            } else if (arrType->getElementType().getTypePtr()->isPointerType()) {
+                                void ** p = (void **) mStack.back().getDeclVal(varDecl);
+                                *(p + idx) = (void *) val;
                             } else {
                                 LOG_DEBUG(RED(TODO) "\n");
                             }
@@ -272,16 +279,36 @@ public:
                 } else {
                     LOG_DEBUG(RED(TODO) "\n");
                 }
+            } else if (auto unaryExpr = dyn_cast<UnaryOperator>(left)) { /* *p = val */
+                long val = eval(right);
+                long addr = eval(unaryExpr->getSubExpr());
+                LOG_DEBUG(RED(%p => 0x%lx) "\n", (void *) addr, val);
+                if (unaryExpr->getType().getTypePtr()->isIntegerType()) {
+                    int * p = (int *) addr;
+                    *p = (int) val;
+                    mStack.back().bindStmt(left, val); /* set statement value */
+                } else if (unaryExpr->getType().getTypePtr()->isPointerType()) {
+                    long * p = (long *) addr;
+                    *p = (long) val;
+                    LOG_DEBUG(RED(binaryOp %p => 0x%lx) "\n", p, val);
+                    mStack.back().bindStmt(left, val);
+                } else {
+                    LOG_DEBUG(RED(TODO) "\n");
+                }
             } else {
                 LOG_DEBUG(RED(TODO) "\n");
             }
         } else { /* arithmetic operation */
             LOG_DEBUG("BinaryOperator is arithmetic operator\n");
             auto op = bOp->getOpcode();
-            int res;
+            long res;
             switch (op) {
                 case BO_Add: /* + */
-                    res = eval(left) + eval(right);
+                    if (left->getType().getTypePtr()->isPointerType()) {
+                        res = eval(left) + sizeof(void *) * eval(right);
+                    } else {
+                        res = eval(left) + eval(right);
+                    }
                     break;
                 case BO_Sub: /* - */
                     res = eval(left) - eval(right);
@@ -324,27 +351,32 @@ public:
         LOG_DEBUG("call unaryOp(UnaryOperator *);\n");
         auto op = uOp->getOpcode();
         auto expr = uOp->getSubExpr();
-        int res;
+        void * addr;
         switch (op) {
-            case UO_Minus:
-                res = -1 * eval(expr);
+            case UO_Minus: /* negative number */
+                mStack.back().pushStmtVal(uOp, -1 * eval(expr));
+                break;
+            case UO_Deref: /* pointer */
+//                mStack.back().pushStmtVal(uOp, *((long *) eval(expr)));
+                addr = (void *) eval(expr);
+                LOG_DEBUG(RED(UnaryOp %p => 0x%lx) "\n", addr, *((long *) addr));
+                mStack.back().pushStmtVal(uOp, *((long *) addr));
                 break;
             default:
                 LOG_DEBUG(RED(TODO) "\n");
                 break;
         }
-        mStack.back().pushStmtVal(uOp, res);
     }
 
     /* Declaration */
     void decl(DeclStmt * declStmt) {
-        declStmt->dumpColor();
+        LOG_COLOR(declStmt);
         for (DeclStmt::decl_iterator it = declStmt->decl_begin(), ie = declStmt->decl_end();
              it != ie; ++ it) {
             Decl * decl = *it;
             if (auto varDecl = dyn_cast<VarDecl>(decl)) {
                 LOG_DEBUG("varDecl: %s\n", varDecl->getName().data());
-                if (varDecl->getType().getTypePtr()->isIntegerType()) {
+                if (varDecl->getType().getTypePtr()->isIntegerType() || varDecl->getType().getTypePtr()->isPointerType()) {
                     if (varDecl->hasInit()) {
                         mStack.back().bindDecl(varDecl, eval(varDecl->getInit()));
                     } else {
@@ -358,10 +390,9 @@ public:
                             for (int i = 0; i < length; i++) {
                                 arr[i] = 0;
                             }
-                            printf(RED(%p) "\n", arr);
                             mStack.back().bindDecl(varDecl, (long) arr); /* bind array's virtual address */
-                        } else if (arrType->getElementType().getTypePtr()->isCharType()) {
-                            char * arr = new char[length];
+                        } else if (arrType->getElementType().getTypePtr()->isPointerType()) {
+                            void ** arr = new void *[length];
                             for (int i = 0; i < length; i++) {
                                 arr[i] = 0;
                             }
@@ -381,12 +412,12 @@ public:
 
     /* Declaration References */
     void declRef(DeclRefExpr * declRef) {
-        declRef->dumpColor();
+        LOG_COLOR(declRef);
         mStack.back().setPC(declRef); /* set PC to current */
         if (declRef->getType()->isIntegerType()) {
             Decl * decl = declRef->getFoundDecl();
-            int val = mStack.back().getDeclVal(decl);
-            LOG_DEBUG("val = %d\n", val);
+            long val = mStack.back().getDeclVal(decl);
+            LOG_DEBUG("val = 0x%lx\n", val);
             mStack.back().bindStmt(declRef, val);
         } else if (declRef->getType()->isArrayType()) {
             auto varDecl = dyn_cast<VarDecl>(declRef->getFoundDecl());
@@ -397,6 +428,17 @@ public:
             } else {
                 LOG_DEBUG(RED(TODO) "\n");
             }
+        } else if (declRef->getType()->isFunctionType()) {
+//            Decl * decl = declRef->getFoundDecl();
+//            long val = mStack.back().getDeclVal(decl);
+//            LOG_DEBUG("val = %p\n", (void *) val);
+//            mStack.back().bindStmt(declRef, val);
+            mStack.back().bindStmt(declRef, 0xdeadbeef);
+        } else if (declRef->getType()->isPointerType()) {
+            Decl * decl = declRef->getFoundDecl();
+            long val = mStack.back().getDeclVal(decl);
+            LOG_DEBUG("val = %p\n", (void *) val);
+            mStack.back().bindStmt(declRef, val);
         } else {
             LOG_DEBUG(RED(TODO) "\n");
         }
@@ -404,11 +446,17 @@ public:
 
     /* Cast */
     void cast(CastExpr * castExpr) {
-        castExpr->dumpColor();
+        LOG_COLOR(castExpr);
         mStack.back().setPC(castExpr);
-        if (castExpr->getType()->isIntegerType()) {
+        if (castExpr->getType()->isIntegerType() || castExpr->getType()->isPointerType()) {
             Expr * expr = castExpr->getSubExpr();
-            int val = mStack.back().getStmtVal(expr);
+            long val = mStack.back().getStmtVal(expr);
+            LOG_DEBUG("val = 0x%lx\n", val);
+            mStack.back().bindStmt(castExpr, val);
+        } else if (castExpr->getType()->isFunctionType()) {
+            Expr * expr = castExpr->getSubExpr();
+            long val = mStack.back().getStmtVal(expr);
+            LOG_DEBUG("val = %p\n", (void *) val);
             mStack.back().bindStmt(castExpr, val);
         } else {
             LOG_DEBUG(RED(TODO) "\n");
@@ -416,7 +464,7 @@ public:
     }
 
     void arrayExpr(ArraySubscriptExpr *arrExpr) {
-        arrExpr->dumpColor();
+        LOG_COLOR(arrExpr);
         mStack.back().setPC(arrExpr);
         if (auto declExpr = dyn_cast<DeclRefExpr>(arrExpr->getLHS()->IgnoreImpCasts())) {
             Decl *decl = declExpr->getFoundDecl();
@@ -426,9 +474,9 @@ public:
                     if (arrType->getElementType().getTypePtr()->isIntegerType()) {
                         int * arr = (int *) mStack.back().getDeclVal(varDecl);
                         mStack.back().bindStmt(arrExpr, *(arr + idx));
-                    } else if (arrType->getElementType().getTypePtr()->isCharType()) {
-                        char * arr = (char *) mStack.back().getDeclVal(varDecl);
-                        mStack.back().bindStmt(arrExpr, *(arr + idx));
+                    } else if (arrType->getElementType().getTypePtr()->isPointerType()) {
+                        void ** arr = (void **) mStack.back().getDeclVal(varDecl);
+                        mStack.back().bindStmt(arrExpr, *((long *)arr + idx));
                     } else {
                         LOG_DEBUG(RED(TODO) "\n");
                     }
@@ -437,28 +485,41 @@ public:
         }
     }
 
+    void integerLiteral(IntegerLiteral * intLiteral) {
+        LOG_COLOR(intLiteral);
+        mStack.back().setPC(intLiteral);
+        long val = intLiteral->getValue().getSExtValue();
+        LOG_DEBUG("val = %ld\n", val);
+        mStack.back().bindStmt(intLiteral, val);
+    }
+
     /// !TODO Support Function Call
     void call(CallExpr * callExpr) { /* function call */
-        callExpr->dumpColor();
+        LOG_COLOR(callExpr);
         mStack.back().setPC(callExpr);
-        int val = 0;
+        long val = 0;
         FunctionDecl * callee = callExpr->getDirectCallee();
         if (callee == mInput) {
             printf("Please Input an Integer Value : ");
-            scanf("%d", &val);
+            scanf("%ld", &val);
             mStack.back().bindStmt(callExpr, val);
         } else if (callee == mOutput) {
-            Expr * decl = callExpr->getArg(0);
-            val = mStack.back().getStmtVal(decl);
-            printf(RED(Result Value : %d) "\n", val);
+            Expr * expr = callExpr->getArg(0);
+            LOG_COLOR(expr);
+            val = eval(callExpr->getArg(0));
+            LOG_DEBUG(RED(Result Value : 0x%x) "\n", (int) val);
+            llvm::errs() << (int) val;
         } else if (callee == mMalloc) {
-            Expr * decl = callExpr->getArg(0);
-            val = mStack.back().getStmtVal(decl);
+            val = eval(callExpr->getArg(0));
+            void *p = malloc(val);
+            LOG_DEBUG(RED(%p = malloc(%lx)) "\n", p, val);
+            mStack.back().bindStmt(callExpr, (long) p);
         } else if (callee == mFree) {
-            Expr * decl = callExpr->getArg(0);
-            val = mStack.back().getStmtVal(decl);
+            val = eval(callExpr->getArg(0));
+            free((void *) val);
+            LOG_DEBUG(RED(free(%p)) "\n", (void *) val);
         } else { /* other functions */
-            std::vector<int> args;
+            std::vector<long> args;
             for (auto arg = callExpr->arg_begin(), e = callExpr->arg_end(); arg != e; arg++) {
                 args.push_back(eval(*arg));
             }
@@ -470,7 +531,30 @@ public:
         }
     }
 
-    int eval(Expr * expr) {
+    void unaryOrTypeExpr(UnaryExprOrTypeTraitExpr * uOrTExpr) {
+        LOG_COLOR(uOrTExpr);
+        mStack.back().setPC(uOrTExpr);
+        if (uOrTExpr->getKind() == UETT_SizeOf) {
+            if (uOrTExpr->getArgumentType()->isIntegerType()) {
+                mStack.back().bindStmt(uOrTExpr, sizeof(int));
+            } else if (uOrTExpr->getArgumentType()->isPointerType()) {
+                mStack.back().bindStmt(uOrTExpr, sizeof(void *));
+            } else {
+                LOG_DEBUG(RED(TODO) "\n");
+            }
+        } else {
+            LOG_DEBUG(RED(TODO) "\n");
+        }
+    }
+
+    void cStyleCastExpr(CStyleCastExpr * cCastExpr) {
+        LOG_COLOR(cCastExpr);
+        mStack.back().setPC(cCastExpr);
+        long val = eval(cCastExpr->getSubExpr());
+        mStack.back().bindStmt(cCastExpr, val);
+    }
+
+    long eval(Expr * expr) {
         expr = expr->IgnoreImpCasts(); /* ignore cast */
         if (auto decl = dyn_cast<DeclRefExpr>(expr)) {
             declRef(decl);
@@ -486,10 +570,14 @@ public:
             unaryOp(uOp);
             return mStack.back().getStmtVal(uOp);
         } else if (auto arrExpr = dyn_cast<ArraySubscriptExpr>(expr)) {
-            int val = mStack.back().getStmtVal(arrExpr);
-            LOG_DEBUG("val = %d\n", val);
-            return val;
-//            return mStack.back().getStmtVal(arrExpr);
+            return mStack.back().getStmtVal(arrExpr);
+        } else if (auto uOrTExpr = dyn_cast<UnaryExprOrTypeTraitExpr>(expr)) {
+            unaryOrTypeExpr(uOrTExpr);
+            return mStack.back().getStmtVal(uOrTExpr);
+        } else if (auto cCastExpr = dyn_cast<CStyleCastExpr>(expr)) {
+            return mStack.back().getStmtVal(cCastExpr);
+        } else if (auto parenExpr = dyn_cast<ParenExpr>(expr)) {
+            return eval(parenExpr->getSubExpr());
         } else { /* TODO */
             LOG_DEBUG(RED(TODO) "\n");
             return 0;
@@ -504,7 +592,7 @@ public:
     }
 
     void setReturnStmt(ReturnStmt * returnStmt) {
-        returnStmt->dumpColor();
+        LOG_COLOR(returnStmt);
         int val = eval(returnStmt->getRetValue());
         mStack.back().setRV(INT_RETURN, val);
     }
